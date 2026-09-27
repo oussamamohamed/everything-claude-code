@@ -1,7 +1,8 @@
 ---
 name: plankton-code-quality
-description: "Write-time code quality enforcement using Plankton — auto-formatting, linting, and Claude-powered fixes on every file edit via hooks."
-origin: community
+description: "Write-time code quality enforcement using Plankton — auto-formatting, linting, and Claude-powered fixes on every file edit via hooks. Use when setting up write-time formatting, linting, or auto-fix hooks on file edits."
+metadata:
+  origin: community
 ---
 
 # Plankton Code Quality Skill
@@ -72,12 +73,9 @@ A PreToolUse hook on Bash blocks legacy package managers:
 
 ### Quick Start
 
-```bash
-# Clone Plankton into your project (or a shared location)
-# Note: Plankton is by @alxfazio
-git clone https://github.com/alexfazio/plankton.git
-cd plankton
+> **Note:** Plankton requires manual installation from its repository. Review the code before installing.
 
+```bash
 # Install core dependencies
 brew install jaq ruff uv
 

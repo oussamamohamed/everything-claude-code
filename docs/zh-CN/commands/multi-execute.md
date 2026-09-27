@@ -2,6 +2,8 @@
 
 多模型协同执行 - 从计划获取原型 → Claude 重构并实施 → 多模型审计与交付。
 
+> **前提条件：** 此命令需要外部的 `ccg-workflow` 运行时，它**不**包含在基础 ECC 安装中。请运行 `npx ccg-workflow` 进行初始化，以配置此命令所依赖的 `~/.claude/bin/codeagent-wrapper` 和 `~/.claude/.ccg/prompts/*` 角色文件。没有该运行时，此命令将无法正常运行。
+
 $ARGUMENTS
 
 ***
@@ -21,7 +23,7 @@ $ARGUMENTS
 **调用语法**（并行：使用 `run_in_background: true`）：
 
 ```
-# Resume session call (recommended) - Implementation Prototype
+# 恢复会话调用（推荐）- 实现原型
 Bash({
   command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend <codex|gemini> {{GEMINI_MODEL_FLAG}}resume <SESSION_ID> - \"$PWD\" <<'EOF'
 ROLE_FILE: <role prompt path>
@@ -33,10 +35,10 @@ OUTPUT: Unified Diff Patch ONLY. Strictly prohibit any actual modifications.
 EOF",
   run_in_background: true,
   timeout: 3600000,
-  description: "Brief description"
+  description: "简要描述"
 })
 
-# New session call - Implementation Prototype
+# 新建会话调用 - 实现原型
 Bash({
   command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend <codex|gemini> {{GEMINI_MODEL_FLAG}}- \"$PWD\" <<'EOF'
 ROLE_FILE: <role prompt path>
@@ -48,7 +50,7 @@ OUTPUT: Unified Diff Patch ONLY. Strictly prohibit any actual modifications.
 EOF",
   run_in_background: true,
   timeout: 3600000,
-  description: "Brief description"
+  description: "简要描述"
 })
 ```
 
@@ -59,21 +61,21 @@ Bash({
   command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend <codex|gemini> {{GEMINI_MODEL_FLAG}}resume <SESSION_ID> - \"$PWD\" <<'EOF'
 ROLE_FILE: <role prompt path>
 <TASK>
-Scope: Audit the final code changes.
+Scope: 审计最终的代码变更。
 Inputs:
-- The applied patch (git diff / final unified diff)
-- The touched files (relevant excerpts if needed)
+- 已应用的补丁 (git diff / final unified diff)
+- 涉及的文件 (必要时提供相关摘录)
 Constraints:
-- Do NOT modify any files.
-- Do NOT output tool commands that assume filesystem access.
+- 请勿修改任何文件。
+- 请勿输出假设有文件系统访问权限的工具命令。
 </TASK>
 OUTPUT:
-1) A prioritized list of issues (severity, file, rationale)
-2) Concrete fixes; if code changes are needed, include a Unified Diff Patch in a fenced code block.
+1) 一个按优先级排序的问题列表 (严重程度, 文件, 理由)
+2) 具体的修复方案；如果需要更改代码，请包含在一个用围栏代码块包裹的 Unified Diff Patch 中。
 EOF",
   run_in_background: true,
   timeout: 3600000,
-  description: "Brief description"
+  description: "简要描述"
 })
 ```
 
@@ -140,26 +142,27 @@ TaskOutput({ task_id: "<task_id>", block: true, timeout: 600000 })
 
 **如果 ace-tool MCP 可用**，使用它进行快速上下文检索：
 
-基于计划中的”关键文件”列表，调用 `mcp__ace-tool__search_context`：
+基于计划中的“关键文件”列表，调用 `mcp__ace-tool__search_context`：
 
 ```
 mcp__ace-tool__search_context({
-  query: “<semantic query based on plan content, including key files, modules, function names>”,
-  project_root_path: “$PWD”
+  query: "<基于计划内容的语义查询，包括关键文件、模块、函数名>",
+  project_root_path: "$PWD"
 })
 ```
 
 **检索策略**：
 
-* 从计划的”关键文件”表中提取目标路径
-* 构建语义查询覆盖：入口文件、依赖模块、相关类型定义
+* 从计划的“关键文件”表中提取目标路径
+* 构建语义查询，涵盖：入口文件、依赖模块、相关类型定义
 * 如果结果不足，添加 1-2 次递归检索
 
-**如果 ace-tool MCP 不可用**，使用 Claude Code 内置工具作为回退：
-1. **Glob**：从计划的”关键文件”表中查找目标文件（例如 `Glob(“src/components/**/*.tsx”)`）
+**如果 ace-tool MCP 不可用**，使用 Claude Code 内置工具作为后备方案：
+
+1. **Glob**：从计划的“关键文件”表中查找目标文件（例如，`Glob("src/components/**/*.tsx")`）
 2. **Grep**：在代码库中搜索关键符号、函数名、类型定义
-3. **Read**：读取发现的文件以收集完整上下文
-4. **Task（Explore 代理）**：如需更广泛的探索，使用 `Task` 并设置 `subagent_type: “Explore”`
+3. **Read**：读取发现的文件以收集完整的上下文
+4. **Task (探索代理)**：对于更广泛的探索，使用 `Task` 和 `subagent_type: "Explore"`
 
 **检索后**：
 

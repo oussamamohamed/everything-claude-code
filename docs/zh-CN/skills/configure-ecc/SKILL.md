@@ -1,326 +1,181 @@
 ---
 name: configure-ecc
-description: Everything Claude Code 的交互式安装程序 — 引导用户选择并安装技能和规则到用户级或项目级目录，验证路径，并可选择优化已安装文件。
-origin: ECC
+description: 在 Claude Code、Codex 或 Kimi 内引导 ECC 安装、更新或重新配置，同时严格遵守各家工具真实的插件、范围和 Hook 能力。
+metadata:
+  origin: ECC
 ---
 
-# 配置 Everything Claude Code (ECC)
+# 配置 Everything Claude Code
 
-一个交互式、分步安装向导，用于 Everything Claude Code 项目。使用 `AskUserQuestion` 引导用户选择性安装技能和规则，然后验证正确性并提供优化。
+在当前工具内运行对话式向导：先检查，只收集受支持的选项，预览，只确认
+一次，以非交互方式执行，验证，最后才显示欢迎信息。不要把 ECC 克隆到
+临时目录，也不要手动复制插件组件。
 
-## 何时激活
+在用户自己操作的终端中，规范入口是 `ecc setup` 和 `npx ecc-universal setup`。
+在工具内请改用下方参数完整的非交互命令。
 
-* 用户说 "configure ecc"、"install ecc"、"setup everything claude code" 或类似表述
-* 用户想要从此项目中选择性安装技能或规则
-* 用户想要验证或修复现有的 ECC 安装
-* 用户想要为其项目优化已安装的技能或规则
+## 按当前工具分流
 
-## 先决条件
+- Claude Code：使用下面完整的范围与 Hook 向导。
+- Codex：使用 Codex 原生插件生命周期；不要提供 Claude 范围，也不要映射
+  Claude 的四种 ECC Hook 配置。
+- Kimi：把项目表面安装到 `./.kimi-code`；Kimi 不支持 ECC 的 Claude 生命周期
+  Hook 配置。
+- 无法确定工具时，先说明检测依据，再询问要配置哪一个，不要直接修改。
 
-此技能必须在激活前对 Claude Code 可访问。有两种引导方式：
+此技能是安装后的重新配置路径，无法拦截或取代提供商内置的首次安装界面。
 
-1. **通过插件**: `/plugin install everything-claude-code` — 插件会自动加载此技能
-2. **手动**: 仅将此技能复制到 `~/.claude/skills/configure-ecc/SKILL.md`，然后通过说 "configure ecc" 激活
+## Claude Code：运行完整对话式向导
 
-***
+### 1. 只读检查
 
-## 步骤 0：克隆 ECC 仓库
-
-在任何安装之前，将最新的 ECC 源代码克隆到 `/tmp`：
-
-```bash
-rm -rf /tmp/everything-claude-code
-git clone https://github.com/affaan-m/everything-claude-code.git /tmp/everything-claude-code
-```
-
-将 `ECC_ROOT=/tmp/everything-claude-code` 设置为所有后续复制操作的源。
-
-如果克隆失败（网络问题等），使用 `AskUserQuestion` 要求用户提供现有 ECC 克隆的本地路径。
-
-***
-
-## 步骤 1：选择安装级别
-
-使用 `AskUserQuestion` 询问用户安装位置：
-
-```
-Question: "Where should ECC components be installed?"
-Options:
-  - "User-level (~/.claude/)" — "Applies to all your Claude Code projects"
-  - "Project-level (.claude/)" — "Applies only to the current project"
-  - "Both" — "Common/shared items user-level, project-specific items project-level"
-```
-
-将选择存储为 `INSTALL_LEVEL`。设置目标目录：
-
-* 用户级别：`TARGET=~/.claude`
-* 项目级别：`TARGET=.claude`（相对于当前项目根目录）
-* 两者：`TARGET_USER=~/.claude`，`TARGET_PROJECT=.claude`
-
-如果目标目录不存在，则创建它们：
+运行以下两条命令，总结 ECC 的安装范围、启用状态和 marketplace 来源：
 
 ```bash
-mkdir -p $TARGET/skills $TARGET/rules
+claude plugin list --json
+claude plugin marketplace list --json
 ```
 
-***
+只有一个现有 `ecc@ecc` 时，将本次视为重新配置。不要把 Claude 提供商所有的
+“Open home page”控件当作安装证据。若 setup 报告多个 ECC 范围、旧版或手动
+安装、配置损坏或 marketplace 冲突，请停止并原样报告恢复建议，不要猜测要删除哪个。
 
-## 步骤 2：选择并安装技能
+### 2. 只收集两个选择
 
-### 2a：选择技能类别
+只询问一次安装范围，并要求且仅要求一个值：
 
-共有 27 项技能，分为 4 个类别。使用 `AskUserQuestion` 和 `multiSelect: true`：
+- `user | project | local`
+- `user` 对当前用户全局可用。
+- `project` 通过仓库设置共享。
+- `local` 仅当前项目私有。
 
-```
-Question: "Which skill categories do you want to install?"
-Options:
-  - "Framework & Language" — "Django, Spring Boot, Go, Python, Java, Frontend, Backend patterns"
-  - "Database" — "PostgreSQL, ClickHouse, JPA/Hibernate patterns"
-  - "Workflow & Quality" — "TDD, verification, learning, security review, compaction"
-  - "All skills" — "Install every available skill"
-```
+界面中只能把选中的一个范围显示为已选或正在安装。如果用户从唯一现有范围
+切换到另一范围，说明这是范围迁移，并在下方命令中加入 `--move-scope`。
 
-### 2b：确认单项技能
+只询问一次 Hook 模式，并要求且仅要求一个值：
 
-对于每个选定的类别，打印下面的完整技能列表，并要求用户确认或取消选择特定的技能。如果列表超过 4 项，将列表打印为文本，并使用 `AskUserQuestion`，提供一个 "安装所有列出项" 的选项，以及一个 "其他" 选项供用户粘贴特定名称。
+- `off | minimal | standard | strict`
+- `off` 保留技能和命令，但关闭 ECC Hook 自动化。
+- `minimal` 只启用最轻量的生命周期和安全自动化。
+- `standard` 平衡质量和安全自动化。
+- `strict` 启用最严格的检查和提醒。
 
-**类别：框架与语言（17 项技能）**
+Hook 偏好是个人 Claude 插件配置，不会跟随所选安装范围。
 
-| 技能 | 描述 |
-|-------|-------------|
-| `backend-patterns` | Node.js/Express/Next.js 的后端架构、API 设计、服务器端最佳实践 |
-| `coding-standards` | TypeScript、JavaScript、React、Node.js 的通用编码标准 |
-| `django-patterns` | Django 架构、使用 DRF 的 REST API、ORM、缓存、信号、中间件 |
-| `django-security` | Django 安全性：身份验证、CSRF、SQL 注入、XSS 防护 |
-| `django-tdd` | 使用 pytest-django、factory\_boy、模拟、覆盖率进行 Django 测试 |
-| `django-verification` | Django 验证循环：迁移、代码检查、测试、安全扫描 |
-| `frontend-patterns` | React、Next.js、状态管理、性能、UI 模式 |
-| `frontend-slides` | 零依赖的 HTML 演示文稿、样式预览以及 PPTX 到网页的转换 |
-| `golang-patterns` | 地道的 Go 模式、构建健壮 Go 应用程序的约定 |
-| `golang-testing` | Go 测试：表驱动测试、子测试、基准测试、模糊测试 |
-| `java-coding-standards` | Spring Boot 的 Java 编码标准：命名、不可变性、Optional、流 |
-| `python-patterns` | Pythonic 惯用法、PEP 8、类型提示、最佳实践 |
-| `python-testing` | 使用 pytest、TDD、固件、模拟、参数化进行 Python 测试 |
-| `springboot-patterns` | Spring Boot 架构、REST API、分层服务、缓存、异步 |
-| `springboot-security` | Spring Security：身份验证/授权、验证、CSRF、密钥、速率限制 |
-| `springboot-tdd` | 使用 JUnit 5、Mockito、MockMvc、Testcontainers 进行 Spring Boot TDD |
-| `springboot-verification` | Spring Boot 验证：构建、静态分析、测试、安全扫描 |
+### 3. 预览并只确认一次
 
-**类别：数据库（3 项技能）**
-
-| 技能 | 描述 |
-|-------|-------------|
-| `clickhouse-io` | ClickHouse 模式、查询优化、分析、数据工程 |
-| `jpa-patterns` | JPA/Hibernate 实体设计、关系、查询优化、事务 |
-| `postgres-patterns` | PostgreSQL 查询优化、模式设计、索引、安全 |
-
-**类别：工作流与质量（8 项技能）**
-
-| 技能 | 描述 |
-|-------|-------------|
-| `continuous-learning` | 从会话中自动提取可重用模式作为习得技能 |
-| `continuous-learning-v2` | 基于本能的学习，带有置信度评分，演变为技能/命令/代理 |
-| `eval-harness` | 用于评估驱动开发 (EDD) 的正式评估框架 |
-| `iterative-retrieval` | 用于子代理上下文问题的渐进式上下文优化 |
-| `security-review` | 安全检查清单：身份验证、输入、密钥、API、支付功能 |
-| `strategic-compact` | 在逻辑间隔处建议手动上下文压缩 |
-| `tdd-workflow` | 强制要求 TDD，覆盖率 80% 以上：单元测试、集成测试、端到端测试 |
-| `verification-loop` | 验证和质量循环模式 |
-
-**类别：业务与内容（5 项技能）**
-
-| 技能 | 描述 |
-|-------|-------------|
-| `article-writing` | 使用笔记、示例或源文档，以指定的口吻进行长篇写作 |
-| `content-engine` | 多平台社交内容、脚本和内容再利用工作流 |
-| `market-research` | 带有来源标注的市场、竞争对手、基金和技术研究 |
-| `investor-materials` | 宣传文稿、一页简介、投资者备忘录和财务模型 |
-| `investor-outreach` | 个性化的投资者冷邮件、熟人介绍和后续跟进 |
-
-**独立技能**
-
-| 技能 | 描述 |
-|-------|-------------|
-| `project-guidelines-example` | 用于创建项目特定技能的模板 |
-
-### 2c：执行安装
-
-对于每个选定的技能，复制整个技能目录：
+优先使用插件自带的 setup 脚本。替换两个已选值，只在范围迁移时加入
+`--move-scope`：
 
 ```bash
-cp -r $ECC_ROOT/skills/<skill-name> $TARGET/skills/
+node "$CLAUDE_PLUGIN_ROOT/scripts/setup.js" --mode claude-plugin \
+  --scope <scope> --hooks <hooks> [--move-scope] --dry-run --json
 ```
 
-注意：`continuous-learning` 和 `continuous-learning-v2` 有额外的文件（config.json、钩子、脚本）——确保复制整个目录，而不仅仅是 SKILL.md。
-
-***
-
-## 步骤 3：选择并安装规则
-
-使用 `AskUserQuestion` 和 `multiSelect: true`：
-
-```
-Question: "Which rule sets do you want to install?"
-Options:
-  - "Common rules (Recommended)" — "Language-agnostic principles: coding style, git workflow, testing, security, etc. (8 files)"
-  - "TypeScript/JavaScript" — "TS/JS patterns, hooks, testing with Playwright (5 files)"
-  - "Python" — "Python patterns, pytest, black/ruff formatting (5 files)"
-  - "Go" — "Go patterns, table-driven tests, gofmt/staticcheck (5 files)"
-```
-
-执行安装：
+如果 `$CLAUDE_PLUGIN_ROOT` 不可用，使用已发布的 npm 包：
 
 ```bash
-# Common rules (flat copy into rules/)
-cp -r $ECC_ROOT/rules/common/* $TARGET/rules/
-
-# Language-specific rules (flat copy into rules/)
-cp -r $ECC_ROOT/rules/typescript/* $TARGET/rules/   # if selected
-cp -r $ECC_ROOT/rules/python/* $TARGET/rules/        # if selected
-cp -r $ECC_ROOT/rules/golang/* $TARGET/rules/        # if selected
+npx --yes --package ecc-universal ecc setup --mode claude-plugin \
+  --scope <scope> --hooks <hooks> [--move-scope] --dry-run --json
 ```
 
-**重要**：如果用户选择了任何特定语言的规则但**没有**选择通用规则，警告他们：
+只显示一次确认摘要，内容包含计划操作、唯一范围、唯一 Hook 模式、marketplace 操作和
+任何从来源到目标的迁移。只问一个是/否问题。不要通过工具的 Shell 调用不带参数的
+交互式 `ecc setup`，因为该 Shell 通常不是 TTY。
 
-> "特定语言规则扩展了通用规则。不安装通用规则可能导致覆盖不完整。是否也安装通用规则？"
+### 4. 应用明确选择
 
-***
-
-## 步骤 4：安装后验证
-
-安装后，执行这些自动化检查：
-
-### 4a：验证文件存在
-
-列出所有已安装的文件并确认它们存在于目标位置：
+确认后，使用同一路径但去掉 `--dry-run`。保留每个明确选择，并请求 JSON：
 
 ```bash
-ls -la $TARGET/skills/
-ls -la $TARGET/rules/
+node "$CLAUDE_PLUGIN_ROOT/scripts/setup.js" --mode claude-plugin \
+  --scope <scope> --hooks <hooks> [--move-scope] --yes --json
 ```
 
-### 4b：检查路径引用
-
-扫描所有已安装的 `.md` 文件中的路径引用：
+备用命令：
 
 ```bash
-grep -rn "~/.claude/" $TARGET/skills/ $TARGET/rules/
-grep -rn "../common/" $TARGET/rules/
-grep -rn "skills/" $TARGET/skills/
+npx --yes --package ecc-universal ecc setup --mode claude-plugin \
+  --scope <scope> --hooks <hooks> [--move-scope] --yes --json
 ```
 
-**对于项目级别安装**，标记任何对 `~/.claude/` 路径的引用：
+### 5. 先验证，再显示欢迎信息
 
-* 如果技能引用 `~/.claude/settings.json` — 这通常没问题（设置始终是用户级别的）
-* 如果技能引用 `~/.claude/skills/` 或 `~/.claude/rules/` — 如果仅安装在项目级别，这可能损坏
-* 如果技能通过名称引用另一项技能 — 检查被引用的技能是否也已安装
-
-### 4c：检查技能间的交叉引用
-
-有些技能会引用其他技能。验证这些依赖关系：
-
-* `django-tdd` 可能引用 `django-patterns`
-* `springboot-tdd` 可能引用 `springboot-patterns`
-* `continuous-learning-v2` 引用 `~/.claude/homunculus/` 目录
-* `python-testing` 可能引用 `python-patterns`
-* `golang-testing` 可能引用 `golang-patterns`
-* 特定语言规则引用其 `common/` 对应项
-
-### 4d：报告问题
-
-对于发现的每个问题，报告：
-
-1. **文件**：包含问题引用的文件
-2. **行号**：行号
-3. **问题**：哪里出错了（例如，"引用了 ~/.claude/skills/python-patterns 但 python-patterns 未安装"）
-4. **建议的修复**：该怎么做（例如，"安装 python-patterns 技能" 或 "将路径更新为 .claude/skills/"）
-
-***
-
-## 步骤 5：优化已安装文件（可选）
-
-使用 `AskUserQuestion`：
-
-```
-Question: "Would you like to optimize the installed files for your project?"
-Options:
-  - "Optimize skills" — "Remove irrelevant sections, adjust paths, tailor to your tech stack"
-  - "Optimize rules" — "Adjust coverage targets, add project-specific patterns, customize tool configs"
-  - "Optimize both" — "Full optimization of all installed files"
-  - "Skip" — "Keep everything as-is"
-```
-
-### 如果优化技能：
-
-1. 读取每个已安装的 SKILL.md
-2. 询问用户其项目的技术栈是什么（如果尚不清楚）
-3. 对于每项技能，建议删除无关部分
-4. 在安装目标处就地编辑 SKILL.md 文件（**不是**源仓库）
-5. 修复在步骤 4 中发现的任何路径问题
-
-### 如果优化规则：
-
-1. 读取每个已安装的规则 .md 文件
-2. 询问用户的偏好：
-   * 测试覆盖率目标（默认 80%）
-   * 首选的格式化工具
-   * Git 工作流约定
-   * 安全要求
-3. 在安装目标处就地编辑规则文件
-
-**关键**：只修改安装目标（`$TARGET/`）中的文件，**绝不**修改源 ECC 仓库（`$ECC_ROOT/`）中的文件。
-
-***
-
-## 步骤 6：安装摘要
-
-从 `/tmp` 清理克隆的仓库：
+必须得到零退出状态，且 setup 结果中的 `scope` 和 `hooks` 必须等于所选值。然后独立运行：
 
 ```bash
-rm -rf /tmp/everything-claude-code
+claude plugin list --json
 ```
 
-然后打印摘要报告：
+只有在所选范围中恰好存在一个已启用的 `ecc@ecc` 条目时才继续。如果
+`$CLAUDE_PLUGIN_ROOT` 可用，把成功 setup 的 `action`（`installed`、`updated`、
+`migrated`、`resumed` 或 `already-migrated`）传给内置渲染器：
 
-```
-## ECC Installation Complete
+调用前必须确认提供方报告的版本匹配 `scripts/lib/terminal-welcome.js` 中的
+`ECC_VERSION_PATTERN`。异常版本文本应被拒绝，不得插入 shell 命令。
 
-### Installation Target
-- Level: [user-level / project-level / both]
-- Path: [target path]
-
-### Skills Installed ([count])
-- skill-1, skill-2, skill-3, ...
-
-### Rules Installed ([count])
-- common (8 files)
-- typescript (5 files)
-- ...
-
-### Verification Results
-- [count] issues found, [count] fixed
-- [list any remaining issues]
-
-### Optimizations Applied
-- [list changes made, or "None"]
+```bash
+node -e 'const { renderTerminalWelcome } = require(process.env.CLAUDE_PLUGIN_ROOT + "/scripts/lib/terminal-welcome"); process.stdout.write(renderTerminalWelcome({ action: process.argv[1], version: process.argv[2], color: process.stdout.isTTY }));' "<action>" "<installed-version>"
 ```
 
-***
+欢迎信息只渲染一次。失败、预览、取消、范围或 Hook 不匹配、无法验证时都不显示；
+改为报告错误和恢复方法。验证完成后，提醒用户运行 `/reload-plugins` 或重启 Claude Code。
 
-## 故障排除
+## Codex：使用原生插件生命周期
 
-### "Claude Code 未获取技能"
+使用 `codex plugin marketplace list --json` 和 `codex plugin list --available --json` 检查。
+Codex 的原生插件命令没有 Claude 式 `user | project | local` 选择器。不要询问 Claude 范围或
+Hook 四档模式。Codex 原生插件支持提供商专用 Hook，但 Codex 会要求用户明确信任。让 Codex
+显示该信任决定；不要声称 Claude 的四种配置可以映射到 Codex。
 
-* 验证技能目录包含一个 `SKILL.md` 文件（不仅仅是松散的 .md 文件）
-* 对于用户级别：检查 `~/.claude/skills/<skill-name>/SKILL.md` 是否存在
-* 对于项目级别：检查 `.claude/skills/<skill-name>/SKILL.md` 是否存在
+如果缺少 ECC marketplace，请添加；否则刷新快照：
 
-### "规则不工作"
+```bash
+codex plugin marketplace add affaan-m/ECC
+codex plugin marketplace upgrade ecc --json
+```
 
-* 规则是平面文件，不在子目录中：`$TARGET/rules/coding-style.md`（正确）对比 `$TARGET/rules/common/coding-style.md`（对于平面安装不正确）
-* 安装规则后重启 Claude Code
+只确认一次，然后安装或幂等刷新已安装缓存，并验证：
 
-### "项目级别安装后出现路径引用错误"
+```bash
+codex plugin add ecc@ecc --json
+codex plugin list --json
+```
 
-* 有些技能假设 `~/.claude/` 路径。运行步骤 4 验证来查找并修复这些问题。
-* 对于 `continuous-learning-v2`，`~/.claude/homunculus/` 目录始终是用户级别的 — 这是预期的，不是错误。
+只有 JSON 报告 ECC 已安装并提供 `installedPath` 时才继续，然后渲染已验证组合包的欢迎信息：
+
+`installedPath` 只能使用 Codex JSON 返回的原始绝对路径，并拒绝控制字符。版本必须通过
+`ECC_VERSION_PATTERN` 验证。请使用下面的 argument array 直接调用 `node`；这是工具 API
+调用，不是 shell 命令：
+
+```text
+["<installedPath>/scripts/welcome.js", "--action", "configured", "--version", "<installed-version>"]
+```
+
+如果当前工具无法把可执行文件与 argument array 分开传递，请跳过欢迎信息。不得使用 Codex
+JSON 中的值构造 shell 命令。
+
+绝不要声称 Claude 的 `off | minimal | standard | strict` 配置已应用到 Codex。
+
+## Kimi：安装项目表面
+
+确认前说明能力摘要：目标为 `./.kimi-code`；ECC 生命周期 Hook 为 `hooks=unsupported`。
+不要询问 Claude 范围或 Hook 模式。先预览：
+
+```bash
+npx --yes --package ecc-universal ecc install --profile core --target kimi --dry-run
+```
+
+只针对该项目目标确认一次，然后执行去掉 `--dry-run` 的同一命令。使用以下命令验证：
+
+```bash
+npx --yes --package ecc-universal ecc doctor --target kimi
+```
+
+只有 doctor 成功，且已安装的指令和技能仍位于 `./.kimi-code` 内时才运行：
+
+```bash
+npx --yes --package ecc-universal ecc welcome --action configured
+```
+
+不要声称 Kimi 已安装或配置 ECC 生命周期 Hook。

@@ -6,32 +6,69 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const { execSync, spawnSync } = require('child_process');
 
 // Platform detection
 const isWindows = process.platform === 'win32';
 const isMacOS = process.platform === 'darwin';
 const isLinux = process.platform === 'linux';
+const SESSION_DATA_DIR_NAME = 'session-data';
+const LEGACY_SESSIONS_DIR_NAME = 'sessions';
+const {
+  resolveAgentDataHome,
+} = require('./agent-data-home');
+const WINDOWS_RESERVED_SESSION_IDS = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'
+]);
 
 /**
  * Get the user's home directory (cross-platform)
  */
 function getHomeDir() {
+  const explicitHome = process.env.HOME || process.env.USERPROFILE;
+  if (explicitHome && explicitHome.trim().length > 0) {
+    return path.resolve(explicitHome);
+  }
   return os.homedir();
 }
 
 /**
- * Get the Claude config directory
+ * ECC agent data root for memory persistence (see scripts/lib/agent-data-home.js).
+ */
+function getAgentDataHome() {
+  return resolveAgentDataHome();
+}
+
+/**
+ * Get the Claude config directory (alias of getAgentDataHome for backwards compatibility).
  */
 function getClaudeDir() {
-  return path.join(getHomeDir(), '.claude');
+  return getAgentDataHome();
 }
+
 
 /**
  * Get the sessions directory
  */
 function getSessionsDir() {
-  return path.join(getClaudeDir(), 'sessions');
+  return path.join(getClaudeDir(), SESSION_DATA_DIR_NAME);
+}
+
+/**
+ * Get the legacy sessions directory used by older ECC installs
+ */
+function getLegacySessionsDir() {
+  return path.join(getClaudeDir(), LEGACY_SESSIONS_DIR_NAME);
+}
+
+/**
+ * Get all session directories to search, in canonical-first order
+ */
+function getSessionSearchDirs() {
+  return Array.from(new Set([getSessionsDir(), getLegacySessionsDir()]));
 }
 
 /**
@@ -99,6 +136,74 @@ function getGitRepoName() {
 }
 
 /**
+ * Get the repository identity for a directory: the canonical (real) path of
+ * the repository's common git dir, which is the main worktree's .git
+ * directory. Every linked worktree of one repository resolves to the same
+ * identity, while unrelated repositories never share one.
+ *
+ * @param {string} [dir] - Directory to resolve from (defaults to process.cwd()).
+ * @returns {string|null} The canonical common git dir, or null when dir is
+ *   not inside a git repository or does not exist.
+ */
+function getRepoIdentity(dir, runCmd = runCommand) {
+  const target = dir || process.cwd();
+  const result = runCmd('git rev-parse --git-common-dir', { cwd: target });
+  if (!result.success || !result.output) return null;
+  const commonDir = path.resolve(target, result.output);
+  try {
+    return fs.realpathSync(commonDir);
+  } catch {
+    return commonDir;
+  }
+}
+
+/**
+ * Normalize a repository identity path for comparison: canonical (real) form
+ * when it exists, forward slashes, no trailing slash, and lowercase on
+ * Windows where the filesystem is case-insensitive. The platform argument
+ * exists so Windows-shaped git output can be tested on any OS.
+ *
+ * @param {string} p - Path to normalize.
+ * @param {string} [platform] - Platform override (defaults to process.platform).
+ * @returns {string} The normalized path, or '' for empty input.
+ */
+function normalizeRepoPath(p, platform = process.platform) {
+  if (!p) return '';
+  let resolved;
+  try {
+    resolved = fs.realpathSync(p);
+  } catch {
+    resolved = path.resolve(p);
+  }
+  const slashed = resolved.replace(/\\/g, '/').replace(/\/+$/, '');
+  return platform === 'win32' ? slashed.toLowerCase() : slashed;
+}
+
+/**
+ * Compare two repository identity paths. String normalization alone is not
+ * enough on Windows CI runners, where TEMP commonly uses an 8.3 short name
+ * (RUNNER~1): Node's realpath keeps the short form while git reports the
+ * long form for the same directory. When the strings differ, fall back to
+ * filesystem identity (device + inode), which is immune to 8.3 names, case
+ * and separators. Fails closed when either path cannot be statted.
+ *
+ * @param {string} a - First identity path.
+ * @param {string} b - Second identity path.
+ * @returns {boolean} True when both paths name the same directory.
+ */
+function sameRepoIdentity(a, b) {
+  if (!a || !b) return false;
+  if (normalizeRepoPath(a) === normalizeRepoPath(b)) return true;
+  try {
+    const sa = fs.statSync(a);
+    const sb = fs.statSync(b);
+    return sa.ino !== 0 && sa.dev === sb.dev && sa.ino === sb.ino;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Get project name from git repo or current directory
  */
 function getProjectName() {
@@ -108,15 +213,51 @@ function getProjectName() {
 }
 
 /**
+ * Sanitize a string for use as a session filename segment.
+ * Replaces invalid characters with hyphens, collapses runs, strips
+ * leading/trailing hyphens, and removes leading dots so hidden-dir names
+ * like ".claude" map cleanly to "claude".
+ *
+ * Pure non-ASCII inputs get a stable 8-char hash so distinct names do not
+ * collapse to the same fallback session id. Mixed-script inputs retain their
+ * ASCII part and gain a short hash suffix for disambiguation.
+ */
+function sanitizeSessionId(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+
+  const hasNonAscii = Array.from(raw).some(char => char.codePointAt(0) > 0x7f);
+  const normalized = raw.replace(/^\.+/, '');
+  const sanitized = normalized
+    .replace(/[^a-zA-Z0-9_-]/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  if (sanitized.length > 0) {
+    const suffix = crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 6);
+    if (WINDOWS_RESERVED_SESSION_IDS.has(sanitized.toUpperCase())) {
+      return `${sanitized}-${suffix}`;
+    }
+    if (!hasNonAscii) return sanitized;
+    return `${sanitized}-${suffix}`;
+  }
+
+  const meaningful = normalized.replace(/[\s\p{P}]/gu, '');
+  if (meaningful.length === 0) return null;
+
+  return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 8);
+}
+
+/**
  * Get short session ID from CLAUDE_SESSION_ID environment variable
- * Returns last 8 characters, falls back to project name then 'default'
+ * Returns last 8 characters, falls back to a sanitized project name then 'default'.
  */
 function getSessionIdShort(fallback = 'default') {
   const sessionId = process.env.CLAUDE_SESSION_ID;
   if (sessionId && sessionId.length > 0) {
-    return sessionId.slice(-8);
+    const sanitized = sanitizeSessionId(sessionId.slice(-8));
+    if (sanitized) return sanitized;
   }
-  return getProjectName() || fallback;
+  return sanitizeSessionId(getProjectName()) || sanitizeSessionId(fallback) || 'default';
 }
 
 /**
@@ -211,6 +352,7 @@ async function readStdinJson(options = {}) {
   return new Promise((resolve) => {
     let data = '';
     let settled = false;
+    let overflowed = false;
 
     const timer = setTimeout(() => {
       if (!settled) {
@@ -220,7 +362,12 @@ async function readStdinJson(options = {}) {
         process.stdin.removeAllListeners('end');
         process.stdin.removeAllListeners('error');
         if (process.stdin.unref) process.stdin.unref();
-        // Resolve with whatever we have so far rather than hanging
+        // Oversized input is always rejected. Otherwise, resolve with whatever
+        // arrived before the timeout rather than hanging.
+        if (overflowed) {
+          resolve({});
+          return;
+        }
         try {
           resolve(data.trim() ? JSON.parse(data) : {});
         } catch {
@@ -231,15 +378,34 @@ async function readStdinJson(options = {}) {
 
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', chunk => {
-      if (data.length < maxSize) {
-        data += chunk;
+      if (settled) return;
+      if (overflowed) return;
+      // Mark oversized input as rejected and discard the buffered prefix.
+      // Continue consuming the stream without retaining later chunks so a
+      // finite parent can finish writing without EPIPE. Resolution happens at
+      // EOF or the existing timeout, which also bounds never-closing writers.
+      if (data.length + chunk.length > maxSize) {
+        overflowed = true;
+        data = '';
+        process.stderr.write(
+          `[readStdinJson] stdin exceeded ${maxSize} bytes; input truncated and treated as empty\n`
+        );
+        return;
       }
+      data += chunk;
     });
 
     process.stdin.on('end', () => {
-      if (settled) return;
+      if (settled) {
+        clearTimeout(timer);
+        return;
+      }
       settled = true;
       clearTimeout(timer);
+      if (overflowed) {
+        resolve({});
+        return;
+      }
       try {
         resolve(data.trim() ? JSON.parse(data) : {});
       } catch {
@@ -250,7 +416,10 @@ async function readStdinJson(options = {}) {
     });
 
     process.stdin.on('error', () => {
-      if (settled) return;
+      if (settled) {
+        clearTimeout(timer);
+        return;
+      }
       settled = true;
       clearTimeout(timer);
       // Resolve with empty object so hooks don't crash on stdin errors
@@ -339,6 +508,20 @@ function commandExists(cmd) {
  * @param {object} options - execSync options
  */
 function runCommand(cmd, options = {}) {
+  // Allowlist: only permit known-safe command prefixes
+  const allowedPrefixes = ['git ', 'node ', 'npx ', 'which ', 'where '];
+  if (!allowedPrefixes.some(prefix => cmd.startsWith(prefix))) {
+    return { success: false, output: 'runCommand blocked: unrecognized command prefix' };
+  }
+
+  // Reject shell metacharacters. $() and backticks are evaluated inside
+  // double quotes, so block $ and ` anywhere in cmd. Other operators
+  // (;|&) are literal inside quotes, so only check unquoted portions.
+  const unquoted = cmd.replace(/"[^"]*"/g, '').replace(/'[^']*'/g, '');
+  if (/[;|&\n]/.test(unquoted) || /[`$]/.test(cmd)) {
+    return { success: false, output: 'runCommand blocked: shell metacharacters not allowed' };
+  }
+
   try {
     const result = execSync(cmd, {
       encoding: 'utf8',
@@ -451,6 +634,24 @@ function countInFile(filePath, pattern) {
 }
 
 /**
+ * Strip all ANSI escape sequences from a string.
+ *
+ * Handles:
+ * - CSI sequences: \x1b[ … <letter>  (colors, cursor movement, erase, etc.)
+ * - OSC sequences: \x1b] … BEL/ST    (window titles, hyperlinks)
+ * - Charset selection: \x1b(B
+ * - Bare ESC + single letter: \x1b <letter>  (e.g. \x1bM for reverse index)
+ *
+ * @param {string} str - Input string possibly containing ANSI codes
+ * @returns {string} Cleaned string with all escape sequences removed
+ */
+function stripAnsi(str) {
+  if (typeof str !== 'string') return '';
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b(?:\[[0-9;?]*[A-Za-z]|\][^\x07\x1b]*(?:\x07|\x1b\\)|\([A-Z]|[A-Z])/g, '');
+}
+
+/**
  * Search for pattern in file and return matching lines with line numbers
  */
 function grepFile(filePath, pattern) {
@@ -491,8 +692,11 @@ module.exports = {
 
   // Directories
   getHomeDir,
+  getAgentDataHome,
   getClaudeDir,
   getSessionsDir,
+  getLegacySessionsDir,
+  getSessionSearchDirs,
   getLearnedSkillsDir,
   getTempDir,
   ensureDir,
@@ -503,8 +707,12 @@ module.exports = {
   getDateTimeString,
 
   // Session/Project
+  sanitizeSessionId,
   getSessionIdShort,
   getGitRepoName,
+  getRepoIdentity,
+  normalizeRepoPath,
+  sameRepoIdentity,
   getProjectName,
 
   // File operations
@@ -515,6 +723,9 @@ module.exports = {
   replaceInFile,
   countInFile,
   grepFile,
+
+  // String sanitisation
+  stripAnsi,
 
   // Hook I/O
   readStdinJson,

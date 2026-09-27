@@ -2,6 +2,8 @@
 
 后端导向的工作流程（研究 → 构思 → 规划 → 执行 → 优化 → 评审），由 Codex 主导。
 
+> **前提条件：** 此命令需要外部的 `ccg-workflow` 运行时，它**不**包含在基础 ECC 安装中。请运行 `npx ccg-workflow` 进行初始化，以配置此命令所依赖的 `~/.claude/bin/codeagent-wrapper` 和 `~/.claude/.ccg/prompts/*` 角色文件。没有该运行时，此命令将无法正常运行。
+
 ## 使用方法
 
 ```bash
@@ -31,34 +33,34 @@
 **调用语法**：
 
 ```
-# New session call
+# 新会话调用
 Bash({
   command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend codex - \"$PWD\" <<'EOF'
-ROLE_FILE: <role prompt path>
+ROLE_FILE: <角色提示路径>
 <TASK>
-Requirement: <enhanced requirement (or $ARGUMENTS if not enhanced)>
-Context: <project context and analysis from previous phases>
+需求: <增强后的需求（若未增强则为 $ARGUMENTS）>
+上下文: <来自先前阶段的项目上下文与分析>
 </TASK>
-OUTPUT: Expected output format
+OUTPUT: 期望的输出格式
 EOF",
   run_in_background: false,
   timeout: 3600000,
-  description: "Brief description"
+  description: "简要描述"
 })
 
-# Resume session call
+# 恢复会话调用
 Bash({
   command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend codex resume <SESSION_ID> - \"$PWD\" <<'EOF'
-ROLE_FILE: <role prompt path>
+ROLE_FILE: <角色提示路径>
 <TASK>
-Requirement: <enhanced requirement (or $ARGUMENTS if not enhanced)>
-Context: <project context and analysis from previous phases>
+需求: <增强后的需求（若未增强则为 $ARGUMENTS）>
+上下文: <来自先前阶段的项目上下文与分析>
 </TASK>
-OUTPUT: Expected output format
+OUTPUT: 期望的输出格式
 EOF",
   run_in_background: false,
   timeout: 3600000,
-  description: "Brief description"
+  description: "简要描述"
 })
 ```
 
@@ -86,13 +88,13 @@ EOF",
 
 ### 阶段 0：提示词增强（可选）
 
-`[Mode: Prepare]` - 如果 ace-tool MCP 可用，调用 `mcp__ace-tool__enhance_prompt`，**用增强后的结果替换原始的 $ARGUMENTS，用于后续的 Codex 调用**。不可用时，直接使用 `$ARGUMENTS`。
+`[Mode: Prepare]` - 如果 ace-tool MCP 可用，调用 `mcp__ace-tool__enhance_prompt`，**将原始的 $ARGUMENTS 替换为增强后的结果，用于后续的 Codex 调用**。如果不可用，则按原样使用 `$ARGUMENTS`。
 
 ### 阶段 1：研究
 
 `[Mode: Research]` - 理解需求并收集上下文
 
-1. **代码检索**（如果 ace-tool MCP 可用）：调用 `mcp__ace-tool__search_context` 以检索现有的 API、数据模型、服务架构。不可用时，使用内置工具：`Glob` 进行文件发现，`Grep` 进行符号/API 搜索，`Read` 进行上下文收集，`Task`（Explore 代理）进行更深入的探索。
+1. **代码检索**（如果 ace-tool MCP 可用）：调用 `mcp__ace-tool__search_context` 来检索现有的 API、数据模型、服务架构。如果不可用，则使用内置工具：`Glob` 用于文件发现，`Grep` 用于符号/API 搜索，`Read` 用于上下文收集，`Task`（探索代理）用于更深入的探索。
 2. 需求完整性评分（0-10）：>=7 继续，<7 停止并补充
 
 ### 阶段 2：构思
